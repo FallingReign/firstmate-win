@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# tests/fm-wake-queue.test.sh - wake-queue losslessness (the queue safety matrix):
+# concurrent append/drain, signal catch-up while no watcher runs, stale/check
+# enqueue-before-suppressor ordering, atomic double-drain, and duplicate collapse.
+# Nothing is lost and nothing is double-consumed. Watcher/lock liveness lives in
+# fm-watcher-lock.test.sh; daemon classification/injection in fm-daemon.test.sh.
+set -u
+
+# shellcheck source=tests/wake-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
+
+WATCH="$ROOT/bin/fm-watch.sh"
+DRAIN="$ROOT/bin/fm-wake-drain.sh"
+
+TMP_ROOT=$(fm_test_tmproot fm-wake-tests)
+
+
+test_concurrent_append_and_drain() {
+  local dir state out1 out2 all pids i pid count unique malformed
+  dir=$(make_case concurrent)
+  state="$dir/state"
+  out1="$dir/drain-one.out"
+  out2="$dir/drain-two.out"
+  all="$dir/all.out"
+  pids=
+  i=1
+  while [ "$i" -le 40 ]; do
+    append_wake "$state" signal "status-$i" "signal: $state/status-$i.status" &
+    pids="$pids $!"
+    i=$((i + 1))
+  done
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out1" &
+  pids="$pids $!"
+  for pid in $pids; do
+    wait "$pid" || fail "concurrent append/drain subprocess failed"
+  done
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out2" || fail "final drain failed"
+  cat "$out1" "$out2" > "$all"
+  count=$(awk 'NF { count++ } END { print count + 0 }' "$all")
+  [ "$count" -eq 40 ] || fail "expected 40 drained records, got $count"
+  malformed=$(awk -F '\t' 'NF != 5 { bad++ } END { print bad + 0 }' "$all")
+  [ "$malformed" -eq 0 ] || fail "drained records had malformed fields"
+  unique=$(awk -F '\t' '{ keys[$4] = 1 } END { for (k in keys) count++; print count + 0 }' "$all")
+  [ "$unique" -eq 40 ] || fail "expected 40 unique keys, got $unique"
+  pass "concurrent append plus drain preserves queue records"
+}
+
+test_signal_catchup_without_running_watcher() {
+  local dir state fakebin out drain_out status_file
+  dir=$(make_case signal)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  drain_out="$dir/drain.out"
+  status_file="$state/task.status"
+  printf 'working: first\n' > "$status_file"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  wait_for_exit "$!" 40 || fail "watcher did not exit for first signal"
+  grep -F "signal: $status_file" "$out" >/dev/null || fail "watcher did not print first signal"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" || fail "drain after first signal failed"
+  grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null || fail "first signal was not queued"
+
+  printf 'done: second\n' >> "$status_file"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  wait_for_exit "$!" 40 || fail "watcher did not exit for second signal"
+  grep -F "signal: $status_file" "$out" >/dev/null || fail "signal written with no watcher was not caught"
+  pass "signal written while no watcher runs is caught on next run"
+}
+
+test_stale_enqueue_before_suppressor() {
+  local dir state fakebin out drain_out capture_file window key pane_hash
+  dir=$(make_case stale)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  drain_out="$dir/drain.out"
+  capture_file="$dir/pane.txt"
+  window="test:fm-stale"
+  printf 'idle prompt' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/stale.meta"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle prompt")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  wait_for_exit "$!" 40 || fail "watcher did not exit for stale pane"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "watcher did not print stale wake"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" || fail "drain after stale wake failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "stale wake was not queued"
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || fail "stale suppressor was not written"
+  pass "stale wake is queued before suppressor state is advanced"
+}
+
+test_check_output_is_queued() {
+  local dir state fakebin out drain_out check_file
+  dir=$(make_case check)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  drain_out="$dir/drain.out"
+  check_file="$state/task.check.sh"
+  cat > "$check_file" <<'SH'
+#!/usr/bin/env bash
+printf 'merged: https://example.test/pr/1\n'
+SH
+  chmod +x "$check_file"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=0 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  wait_for_exit "$!" 40 || fail "watcher did not exit for check output"
+  grep -F "check: $check_file: merged: https://example.test/pr/1" "$out" >/dev/null || fail "watcher did not print check wake"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" || fail "drain after check wake failed"
+  grep "$(printf '\tcheck\t')" "$drain_out" | grep -F "$check_file" | grep -F 'merged: https://example.test/pr/1' >/dev/null || fail "check wake was not queued"
+  [ -e "$state/.last-check" ] || fail "check cadence marker was not written after queue append"
+  pass "check output is queued before cadence suppression"
+}
+
+test_atomic_double_drain() {
+  local dir state out1 out2 all count leftover
+  dir=$(make_case double-drain)
+  state="$dir/state"
+  out1="$dir/drain-one.out"
+  out2="$dir/drain-two.out"
+  all="$dir/all.out"
+  append_wake "$state" heartbeat heartbeat heartbeat || fail "heartbeat append failed"
+  append_wake "$state" signal task "signal: $state/task.status" || fail "signal append failed"
+  append_wake "$state" stale 's:fm-task' 'stale: s:fm-task' || fail "stale append failed"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out1" &
+  pid1=$!
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out2" &
+  pid2=$!
+  wait "$pid1" || fail "first drain failed"
+  wait "$pid2" || fail "second drain failed"
+  cat "$out1" "$out2" > "$all"
+  count=$(awk 'NF { count++ } END { print count + 0 }' "$all")
+  [ "$count" -eq 3 ] || fail "two drains consumed records more than once or lost records; got $count"
+  leftover=$(FM_STATE_OVERRIDE="$state" "$DRAIN" | awk 'NF { count++ } END { print count + 0 }')
+  [ "$leftover" -eq 0 ] || fail "queue was not empty after double drain"
+  pass "two atomic drains cannot consume the same records twice"
+}
+
+test_drain_dedupes_obvious_duplicates() {
+  local dir state out count
+  dir=$(make_case dedupe)
+  state="$dir/state"
+  out="$dir/drain.out"
+  append_wake "$state" heartbeat heartbeat heartbeat || fail "first heartbeat append failed"
+  append_wake "$state" signal task.status "signal: $state/task.status" || fail "first signal append failed"
+  append_wake "$state" heartbeat heartbeat heartbeat || fail "second heartbeat append failed"
+  append_wake "$state" signal task.status "signal: $state/task.status $state/task.turn-ended" || fail "second signal append failed"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "dedupe drain failed"
+  count=$(awk 'NF { count++ } END { print count + 0 }' "$out")
+  [ "$count" -eq 2 ] || fail "expected 2 deduped records, got $count"
+  grep "$(printf '\theartbeat\theartbeat\theartbeat')" "$out" >/dev/null || fail "heartbeat was not preserved"
+  grep "$(printf '\tsignal\ttask.status\t')" "$out" | grep -F "$state/task.turn-ended" >/dev/null || fail "latest signal payload was not preserved"
+  pass "drain collapses obvious duplicate heartbeat and signal records"
+}
+
+test_concurrent_append_and_drain
+test_signal_catchup_without_running_watcher
+test_stale_enqueue_before_suppressor
+test_check_output_is_queued
+test_atomic_double_drain
+test_drain_dedupes_obvious_duplicates
