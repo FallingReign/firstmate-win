@@ -105,6 +105,7 @@ If a pane shows the exit banner, relaunch with `--continue` to resume the sessio
 | Busy-pane signature | `Working...` (braille spinner prefix; no `esc to interrupt` text) |
 | Exit command | `/quit` |
 | Interrupt | single Escape |
+| Watcher arm | `bin/fm-base-waker.sh &` (see below) |
 
 Pi has no permission system, so crewmates are always autonomous.
 Keep the brief as one positional argument.
@@ -117,3 +118,5 @@ The decision persists per path in `~/.pi/agent/trust.json`, so later spawns in t
 `fm-spawn` keeps the turn-end extension in `state/`, outside the worktree, because project-local extension files make the trust gate strictly worse and pollute the project.
 The extension must listen for pi's `turn_end` event, not `agent_end`, so the watcher wakes after each completed turn instead of only when the whole agent run exits.
 Pi sets `PI_CODING_AGENT=true` for its children; this is its harness-detection env marker.
+
+**Watcher delivery on pi.** Pi has no `run_in_background` facility: any child backgrounded with `&` inside a pi tool call is reaped when the call returns, so `fm-watch-arm.sh`'s exit-and-notify model cannot reach pi. Instead, start `bin/fm-base-waker.sh &` once at session start (or after a restart). This orphaned process persists across tool calls, runs `fm-watch.sh` in a loop, and on each wake injects the reason line verbatim into your pane using the shared `fm-tmux-lib.sh` inject primitive — same composer/busy guards as `fm-send.sh`, so it never lands on a mid-turn or half-typed line. Your pane receives the injected reason as if the captain typed it; handle it exactly as a watcher wake (drain `fm-wake-drain.sh`, act on the reason, continue). No per-wake re-arm is needed on pi; the base waker loops internally. `WEZTERM_PANE` inherited from your session is the inject target; override with `FM_SUPERVISOR_TARGET`. The watcher singleton lock, liveness beacon, and `fm-guard.sh` all work identically to other harnesses. If the base waker dies (e.g. after a session restart), restart it with `bin/fm-base-waker.sh &`.
