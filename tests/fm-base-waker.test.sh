@@ -32,8 +32,45 @@ if [ -z "${FM_TEST_WAKER_SOURCED:-}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Unit: _is_wake_reason
+# Platform proof: nohup & produces an orphan adopted by init (PPID=1)
+# This test documents the empirical evidence that the base waker's arm
+# mechanism (nohup bin/fm-base-waker.sh >/dev/null 2>&1 &) survives across
+# pi tool calls. Each pi tool call is a non-interactive shell; when it exits,
+# backgrounded children become orphans adopted by init (PPID=1).
 # ---------------------------------------------------------------------------
+
+test_nohup_background_survives_subshell_exit_with_ppid1() {
+  # Simulate pi arming the waker: start a process in a subshell (a fresh
+  # non-interactive shell, like a pi tool call) using nohup &. The subshell
+  # exits immediately. The orphan must still be alive and under init.
+  local pid_file waker_pid ppid
+  pid_file=$(mktemp)
+
+  # Start a long-lived process inside a subshell that exits right away.
+  bash -c "nohup sleep 60 >/dev/null 2>&1 & echo \$! > '$pid_file'"
+
+  # Give the OS a moment to adopt the orphan under init.
+  sleep 0.3
+
+  waker_pid=$(cat "$pid_file" 2>/dev/null)
+  [ -n "$waker_pid" ] || fail "no PID captured from subshell"
+  rm -f "$pid_file"
+
+  # Must be alive after the subshell exited.
+  kill -0 "$waker_pid" 2>/dev/null \
+    || fail "nohup-backgrounded process died when subshell exited (expected PPID=1 orphan)"
+
+  # Must have been adopted by init (PPID=1). Verified on Git Bash/Cygwin.
+  # Note: Cygwin ps does not support -o ppid=; extract from raw output.
+  ppid=$(ps -p "$waker_pid" 2>/dev/null | awk 'NR==2 {print $2}')
+  [ "$ppid" = "1" ] \
+    || fail "process not under init after subshell exit (ppid='$ppid'); orphaning did not occur on this platform"
+
+  kill "$waker_pid" 2>/dev/null || true
+  pass "nohup & survives subshell exit: process alive with PPID=1 (adopted by init) — base waker arm mechanism proven"
+}
+
+
 
 test_is_wake_reason_accepts_all_wake_prefixes() {
   _is_wake_reason "signal: /state/foo.status" \
@@ -319,6 +356,7 @@ test_resolve_target_priority() {
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
+test_nohup_background_survives_subshell_exit_with_ppid1
 test_is_wake_reason_accepts_all_wake_prefixes
 test_is_wake_reason_rejects_status_lines
 test_inject_wake_delivers_reason_to_idle_pane

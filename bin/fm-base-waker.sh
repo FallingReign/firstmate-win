@@ -17,9 +17,14 @@
 #
 # Usage: fm-base-waker.sh
 #   Run as a long-lived background process on pi or any harness without
-#   run_in_background. Start it from the firstmate session with `&` so it
-#   becomes an orphaned child that survives the tool call:
-#     bin/fm-base-waker.sh &
+#   run_in_background. Start it from the firstmate session with nohup so it
+#   is protected from SIGHUP and survives the tool-call shell's exit:
+#     nohup bin/fm-base-waker.sh >/dev/null 2>&1 &
+#   On pi, every tool call is a fresh non-interactive shell; any process
+#   backgrounded with & in that shell is orphaned and adopted by init (PPID=1)
+#   when the shell exits, so it persists across tool calls. nohup additionally
+#   protects against SIGHUP in case the session closes. This has been verified
+#   empirically on Git Bash / Cygwin: PPID=1 confirmed after subshell exit.
 #   On claude/codex/opencode, fm-watch-arm.sh (exit-and-notify via tracked
 #   background) is the correct mechanism; this script is additive and does not
 #   replace it on those harnesses.
