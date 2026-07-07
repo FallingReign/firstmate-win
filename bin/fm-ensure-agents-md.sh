@@ -3,7 +3,9 @@
 # AGENTS.md is the real project-intrinsic knowledge file; CLAUDE.md is a
 # relative symlink to it for compatibility. Creates a minimal AGENTS.md skeleton
 # when neither file exists, promotes a real CLAUDE.md file when it is the only
-# file present, and refuses to clobber distinct real files or wrong symlinks.
+# file present, defaults to AGENTS.md as canonical when both real files coexist
+# (leaving CLAUDE.md untouched), and refuses to clobber distinct files only when
+# the relationship is ambiguous (wrong symlinks).
 # This is a worktree utility for crewmates, not a supervision script, so it does
 # not call fm-guard.sh.
 # Usage: fm-ensure-agents-md.sh [repo-or-worktree-dir]
@@ -81,8 +83,8 @@ if [ -e "$AGENTS" ]; then
     exit 0
   fi
   if [ -f "$CLAUDE" ]; then
-    echo "conflict: both AGENTS.md and CLAUDE.md are real files in $DIR; reconcile them manually" >&2
-    exit 1
+    echo "unchanged: AGENTS.md canonical; CLAUDE.md kept as a real file in $DIR"
+    exit 0
   fi
   echo "conflict: CLAUDE.md exists in $DIR but is not a regular file or symlink" >&2
   exit 1
