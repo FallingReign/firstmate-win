@@ -59,6 +59,9 @@ When it is unset, the home is this repo root, which is today's behavior.
 When it is set, scripts still use their own `bin/` from the repo they live in, but operational dirs come from `$FM_HOME`: `state/`, `data/`, `config/`, and `projects/`.
 Existing overrides remain compatible: `FM_STATE_OVERRIDE` can still point at a custom state dir, and `FM_ROOT_OVERRIDE` still behaves like the old whole-root override when `FM_HOME` is unset.
 Each secondmate gets its own persistent `FM_HOME`, so its local state, backlog, projects, and session lock are isolated from the main firstmate.
+`bin/fm-crew-monitor.js` (the crew-panel right pane, see below) follows the same convention directly: it reads `FM_HOME` from the environment and defaults to the directory containing its own `bin/` when unset.
+
+`.pi/extensions/crew-panel.ts` is a pi extension, auto-discovered whenever pi runs from this repo root, that gives the captain a live view of the fleet without leaving the chat pane. On `session_start` it opens a narrow (~25%) WezTerm split to the right of the pi pane running `bin/fm-crew-monitor.js` with `FM_HOME` set, reusing an already-running monitor pane instead of spawning a duplicate - keyed off a persisted pane id in `state/.crew-monitor-pane`, verified live via `wezterm cli list --format json` (the pane title the monitor script sets on itself, `fm-crew-monitor`, is tried first but is a best-effort fallback only: OSC-title updates from a freshly split-spawned process were not observed to propagate to `wezterm cli list` output reliably). It closes that pane on `session_shutdown` and keeps a `🚢 N active` / `🚢 idle` footer status in sync every `turn_end`. It no-ops when `wezterm` is not on `PATH` or when there is no UI (`ctx.hasUI` false, e.g. RPC/print mode). The monitor script itself is plain, dependency-free Node (`node:fs`/`node:readline`/`node:process` only, no build step): it polls `state/*.meta` and `state/*.status` every 2s, and supports arrow-key navigation into a detail view (last 10 status lines + brief description) with `Enter`/`q`/`Escape`.
 
 ```
 AGENTS.md            this file (CLAUDE.md is a symlink to it)
@@ -68,6 +71,7 @@ README.md            public overview and development notes
 .tasks.toml          tracked tasks-axi markdown backend config; drives backlog mutations when a compatible tasks-axi is on PATH (section 10), otherwise inert
 .agents/skills/      shared skills, committed
 .claude/skills       symlink to .agents/skills for claude compatibility
+.pi/extensions/      pi extensions, committed; auto-discovered when pi runs from this repo root (crew-panel.ts: live crew panel, see above)
 bin/                 helper scripts, committed; read each script's header before first use
 config/crew-harness  crewmate harness override; LOCAL, gitignored; absent or "default" = same as firstmate; value is <adapter>[:<model>] (e.g. pi:sonnet)
 config/secondmate-harness  secondmate harness/model override; LOCAL, gitignored; absent, empty, or "default" falls back to crew-harness (fm-harness.sh secondmate)
@@ -90,6 +94,7 @@ state/               volatile runtime signals; gitignored
   .hash-* .count-* .stale-* .seen-* .last-* .heartbeat-streak   watcher internals; never touch
   .last-watcher-beat watcher liveness beacon, touched every poll; fm-guard.sh reads it
   .subsuper-* .supervise-daemon.*   sub-supervisor internals; never touch
+  .crew-monitor-pane single line, the WezTerm pane id of the live crew-panel monitor; written/read by .pi/extensions/crew-panel.ts
 .no-mistakes/        local validation state and evidence; gitignored
 ```
 
