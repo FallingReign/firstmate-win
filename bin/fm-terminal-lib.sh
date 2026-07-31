@@ -72,9 +72,22 @@ console.log(pane.pane_id);
 }
 
 fm_term_spawn() {
-  local title=$1 cwd=$2 pane bash_cmd
+  local title=$1 cwd=$2 pane bash_cmd anchor_window
   bash_cmd=$(fm_to_native_path "$(fm_git_bash_cmd)")
-  pane=$(fm_term_cli spawn --cwd "$(fm_to_native_path "$cwd")" -- "$bash_cmd" -l)
+  # `wezterm cli spawn` with no anchor infers the target window from the current
+  # pane via $WEZTERM_PANE - which is unset here because firstmate drives wezterm
+  # from outside any WezTerm-hosted pane. Anchor explicitly instead: reuse an
+  # existing window as a new tab so crewmates collect into one window, or bootstrap
+  # the first window with --new-window when none exists yet.
+  anchor_window=$(fm_term_cli list --format json | node -e '
+const panes = JSON.parse(require("fs").readFileSync(0, "utf8"));
+if (panes[0]) console.log(panes[0].window_id);
+' 2>/dev/null || true)
+  if [ -n "$anchor_window" ]; then
+    pane=$(fm_term_cli spawn --window-id "$anchor_window" --cwd "$(fm_to_native_path "$cwd")" -- "$bash_cmd" -l)
+  else
+    pane=$(fm_term_cli spawn --new-window --cwd "$(fm_to_native_path "$cwd")" -- "$bash_cmd" -l)
+  fi
   fm_term_cli set-tab-title --pane-id "$pane" "$title" >/dev/null
   printf '%s\n' "$pane"
 }
