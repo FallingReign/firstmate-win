@@ -173,19 +173,23 @@ All truth lives in terminal panes, state files, data/backlog.md, data/secondmate
 
 ## 6. Project management
 
-All projects live flat under `projects/`.
+Projects normally live flat under `projects/`.
+A captain may instead keep a clone wherever they already organize their repos; register that with an explicit `path:` field (below) so the fleet still tracks it.
 
 `data/projects.md` is firstmate's thin navigation registry.
 Every project in the fleet has one line:
 
 ```markdown
 - <name> [<mode>] - <one-line description> (added <date>)
+- <name> [<mode>] - <one-line description> (path: <absolute-path>; remote: <url>) (added <date>)
 ```
 
 The registry line records the project name, delivery mode, optional `+yolo` posture, and one-line description.
-Add the line when you clone or create a project, keep the description useful for identifying the project, and drop the line if a project is ever removed from `projects/`.
+Add the line when you clone or create a project, keep the description useful for identifying the project, and drop the line if a project is ever removed from `projects/` (or, for a `path:`-registered project, from wherever it lives).
 Do not turn the registry into a knowledge dump.
 Durable descriptive detail belongs in the project's own `AGENTS.md`.
+The `path:` field is optional and only needed when the clone lives outside `projects/`; when absent, the project is assumed to live at `projects/<name>`, as before.
+`bin/fm-fleet-sync.sh`'s no-arg sweep (invoked by bootstrap, section 3) reads this field: it syncs every directory under `projects/` plus every registry entry with a `path:`, de-duplicated by resolved path, so a project kept outside `projects/` still gets fast-forwarded like any other - this closes a gap where such projects were never auto-synced and could silently drift behind origin.
 
 `data/secondmates.md` is the secondmate routing table.
 Every persistent secondmate has one line:

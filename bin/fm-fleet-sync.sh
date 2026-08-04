@@ -7,6 +7,12 @@
 # diverged branches, and fetch/fast-forward failures without forcing or stashing.
 # Pruning never deletes the checked-out branch or a branch that still has a
 # worktree, so it cannot discard unlanded work; set FM_FLEET_PRUNE=0 to disable it.
+# The no-arg sweep covers two sources, unioned and de-duplicated by resolved
+# path: every directory directly under $PROJECTS, and every project registered
+# in data/projects.md via an explicit `path:` field (for clones a captain keeps
+# outside $PROJECTS - see AGENTS.md section 2/6). Registry lines with no `path:`
+# field are assumed to live under $PROJECTS/<name> as before, so they only come
+# from the directory sweep.
 # Usage: fm-fleet-sync.sh [<project-dir>]
 set -eu
 
@@ -14,6 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+REGISTRY="$DATA/projects.md"
 "$FM_ROOT/bin/fm-guard.sh" || true
 
 usage() {
@@ -32,6 +40,37 @@ project_label() {
     projects/*) basename "$PROJ" ;;
     *) printf '%s\n' "$PROJ" ;;
   esac
+}
+
+# canon_path <path>: print a resolved absolute path for de-duplication (falls
+# back to the raw input if the path isn't a directory yet, e.g. a stale
+# registry entry - sync_project reports that as "skipped: not a directory").
+canon_path() {
+  if [ -d "$1" ]; then
+    (cd "$1" 2>/dev/null && pwd)
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+# registry_entries: print "<name><TAB><path>" for every data/projects.md entry
+# that carries an explicit `(path: ...; ...)` field - the registered name, not
+# a basename guess, so fm-project-mode.sh still resolves the right mode/yolo
+# for a project whose directory name differs from its registry name. Entries
+# without a `path:` field are skipped here; they're covered by the
+# $PROJECTS/* sweep instead.
+registry_entries() {
+  [ -f "$REGISTRY" ] || return 0
+  awk '
+    /^- / {
+      name = $2
+      if (match($0, /\(path: *[^;)]*/)) {
+        p = substr($0, RSTART + 6, RLENGTH - 6)
+        gsub(/^[ \t]+|[ \t]+$/, "", p)
+        if (p != "") print name "\t" p
+      }
+    }
+  ' "$REGISTRY"
 }
 
 default_branch() {
@@ -90,7 +129,7 @@ prune_gone_branches() {
 
 sync_project() {
   PROJ=$1
-  label=$(project_label)
+  label=${2:-$(project_label)}
 
   if [ ! -d "$PROJ" ]; then
     echo "$label: skipped: not a directory"
@@ -189,9 +228,21 @@ if [ $# -eq 1 ]; then
   exit 0
 fi
 
-[ -d "$PROJECTS" ] || exit 0
-for proj in "$PROJECTS"/*; do
-  [ -e "$proj" ] || continue
-  [ -d "$proj" ] || continue
-  sync_project "$proj"
-done
+declare -A synced_paths=()
+
+if [ -d "$PROJECTS" ]; then
+  for proj in "$PROJECTS"/*; do
+    [ -e "$proj" ] || continue
+    [ -d "$proj" ] || continue
+    synced_paths["$(canon_path "$proj")"]=1
+    sync_project "$proj"
+  done
+fi
+
+while IFS=$'\t' read -r regname regpath; do
+  [ -n "$regpath" ] || continue
+  key=$(canon_path "$regpath")
+  [ -z "${synced_paths[$key]:-}" ] || continue
+  synced_paths["$key"]=1
+  sync_project "$regpath" "$regname"
+done < <(registry_entries)
