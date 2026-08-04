@@ -198,6 +198,7 @@ The first mate drives these; you rarely need to, but they work by hand too.
 | `fm-teardown.sh`         | Return the worktree or retire/release a secondmate home; protects ship work, requires scout reports, checks child work, and prints the backlog reminder |
 | `fm-harness.sh`          | Detect the running harness; resolve the effective crewmate harness                                                  |
 | `fm-lock.sh`             | Per-home firstmate session lock                                                                                     |
+| `fm-crew-monitor.js`     | Dependency-free Node renderer for the live crew-panel pane; polls `state/*.meta`/`state/*.status` and drills into a task's detail view with arrow keys |
 
 ## Built-in skills
 
