@@ -294,6 +294,7 @@ tests/fm-spawn-batch.test.sh              # fm-spawn.sh batch (id=repo) argument
 tests/fm-bootstrap.test.sh                # bootstrap dependency and feature-probe tests
 tests/fm-update.test.sh                   # fast-forward-only self-update, reread, nudge, dedup, and skip-safety tests
 tests/fm-teardown.test.sh                 # fm-teardown.sh safety and reminder checks: local-only fork-remote allow, truly-unpushed refuse, merged-to-main allow, no-mistakes regression, tasks-axi reminder, --force override
+tests/fm-fleet-sync.test.sh               # no-arg sweep scope: $PROJECTS/* directory sweep, path:-registered project outside $PROJECTS, dedupe, local-only safety via registry name
 [ "$(readlink CLAUDE.md)" = "AGENTS.md" ]
 [ "$(readlink .claude/skills)" = "../.agents/skills" ]
 FM_HEARTBEAT=2 FM_POLL=1 bin/fm-watch-arm.sh  # watcher re-arm smoke test (prints arm status, then "heartbeat")
